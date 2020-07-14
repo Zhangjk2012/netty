@@ -19,29 +19,40 @@ import static io.netty.resolver.dns.DnsAddressDecoder.decodeAddress;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
-import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import io.netty.channel.EventLoop;
 import io.netty.handler.codec.dns.DnsRecord;
 import io.netty.handler.codec.dns.DnsRecordType;
+import io.netty.util.concurrent.Promise;
 
 final class DnsAddressResolveContext extends DnsResolveContext<InetAddress> {
 
     private final DnsCache resolveCache;
+    private final AuthoritativeDnsServerCache authoritativeDnsServerCache;
+    private final boolean completeEarlyIfPossible;
 
-    DnsAddressResolveContext(DnsNameResolver parent, String hostname, DnsRecord[] additionals,
-                             DnsServerAddressStream nameServerAddrs, DnsCache resolveCache) {
-        super(parent, hostname, DnsRecord.CLASS_IN, parent.resolveRecordTypes(), additionals, nameServerAddrs);
+    DnsAddressResolveContext(DnsNameResolver parent, Promise<?> originalPromise,
+                             String hostname, DnsRecord[] additionals,
+                             DnsServerAddressStream nameServerAddrs, DnsCache resolveCache,
+                             AuthoritativeDnsServerCache authoritativeDnsServerCache,
+                             boolean completeEarlyIfPossible) {
+        super(parent, originalPromise, hostname, DnsRecord.CLASS_IN,
+              parent.resolveRecordTypes(), additionals, nameServerAddrs);
         this.resolveCache = resolveCache;
+        this.authoritativeDnsServerCache = authoritativeDnsServerCache;
+        this.completeEarlyIfPossible = completeEarlyIfPossible;
     }
 
     @Override
-    DnsResolveContext<InetAddress> newResolverContext(DnsNameResolver parent, String hostname,
+    DnsResolveContext<InetAddress> newResolverContext(DnsNameResolver parent, Promise<?> originalPromise,
+                                                      String hostname,
                                                       int dnsClass, DnsRecordType[] expectedTypes,
                                                       DnsRecord[] additionals,
                                                       DnsServerAddressStream nameServerAddrs) {
-        return new DnsAddressResolveContext(parent, hostname, additionals, nameServerAddrs, resolveCache);
+        return new DnsAddressResolveContext(parent, originalPromise, hostname, additionals, nameServerAddrs,
+                                            resolveCache, authoritativeDnsServerCache, completeEarlyIfPossible);
     }
 
     @Override
@@ -50,41 +61,20 @@ final class DnsAddressResolveContext extends DnsResolveContext<InetAddress> {
     }
 
     @Override
-    boolean containsExpectedResult(List<InetAddress> finalResult) {
-        final int size = finalResult.size();
-        final Class<? extends InetAddress> inetAddressType = parent.preferredAddressType().addressType();
-        for (int i = 0; i < size; i++) {
-            InetAddress address = finalResult.get(i);
-            if (inetAddressType.isInstance(address)) {
-                return true;
-            }
-        }
-        return false;
+    List<InetAddress> filterResults(List<InetAddress> unfiltered) {
+        Collections.sort(unfiltered, PreferredAddressTypeComparator.comparator(parent.preferredAddressType()));
+        return unfiltered;
     }
 
     @Override
-    List<InetAddress> filterResults(List<InetAddress> unfiltered) {
-        final Class<? extends InetAddress> inetAddressType = parent.preferredAddressType().addressType();
-        final int size = unfiltered.size();
-        int numExpected = 0;
-        for (int i = 0; i < size; i++) {
-            InetAddress address = unfiltered.get(i);
-            if (inetAddressType.isInstance(address)) {
-                numExpected++;
-            }
-        }
-        if (numExpected == size || numExpected == 0) {
-            // If all the results are the preferred type, or none of them are, then we don't need to do any filtering.
-            return unfiltered;
-        }
-        List<InetAddress> filtered = new ArrayList<InetAddress>(numExpected);
-        for (int i = 0; i < size; i++) {
-            InetAddress address = unfiltered.get(i);
-            if (inetAddressType.isInstance(address)) {
-                filtered.add(address);
-            }
-        }
-        return filtered;
+    boolean isCompleteEarly(InetAddress resolved) {
+        return completeEarlyIfPossible && parent.preferredAddressType().addressType() == resolved.getClass();
+    }
+
+    @Override
+    boolean isDuplicateAllowed() {
+        // We don't want include duplicates to mimic JDK behaviour.
+        return false;
     }
 
     @Override
@@ -96,5 +86,24 @@ final class DnsAddressResolveContext extends DnsResolveContext<InetAddress> {
     @Override
     void cache(String hostname, DnsRecord[] additionals, UnknownHostException cause) {
         resolveCache.cache(hostname, additionals, cause, parent.ch.eventLoop());
+    }
+
+    @Override
+    void doSearchDomainQuery(String hostname, Promise<List<InetAddress>> nextPromise) {
+        // Query the cache for the hostname first and only do a query if we could not find it in the cache.
+        if (!DnsNameResolver.doResolveAllCached(
+                hostname, additionals, nextPromise, resolveCache, parent.resolvedInternetProtocolFamiliesUnsafe())) {
+            super.doSearchDomainQuery(hostname, nextPromise);
+        }
+    }
+
+    @Override
+    DnsCache resolveCache() {
+        return resolveCache;
+    }
+
+    @Override
+    AuthoritativeDnsServerCache authoritativeDnsServerCache() {
+        return authoritativeDnsServerCache;
     }
 }

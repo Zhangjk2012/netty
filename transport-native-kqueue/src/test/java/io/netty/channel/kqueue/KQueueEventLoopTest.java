@@ -17,6 +17,9 @@ package io.netty.channel.kqueue;
 
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.ServerChannel;
+import io.netty.channel.socket.ServerSocketChannel;
+import io.netty.testsuite.transport.AbstractSingleThreadEventLoopTest;
 import io.netty.util.concurrent.Future;
 import org.junit.Test;
 
@@ -24,32 +27,26 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
-public class KQueueEventLoopTest {
+public class KQueueEventLoopTest extends AbstractSingleThreadEventLoopTest {
 
-    @Test(timeout = 5000L)
-    public void testScheduleBigDelayOverMax() {
-        EventLoopGroup group = new KQueueEventLoopGroup(1);
+    @Override
+    protected EventLoopGroup newEventLoopGroup() {
+        return new KQueueEventLoopGroup();
+    }
 
-        final EventLoop el = group.next();
-        try {
-            el.schedule(new Runnable() {
-                @Override
-                public void run() {
-                    // NOOP
-                }
-            }, Integer.MAX_VALUE, TimeUnit.DAYS);
-            fail();
-        } catch (IllegalArgumentException expected) {
-            // expected
-        }
+    @Override
+    protected ServerSocketChannel newChannel() {
+        return new KQueueServerSocketChannel();
+    }
 
-        group.shutdownGracefully();
+    @Override
+    protected Class<? extends ServerChannel> serverChannelClass() {
+        return KQueueServerSocketChannel.class;
     }
 
     @Test
-    public void testScheduleBigDelay() {
+    public void testScheduleBigDelayNotOverflow() {
         EventLoopGroup group = new KQueueEventLoopGroup(1);
 
         final EventLoop el = group.next();
@@ -58,7 +55,7 @@ public class KQueueEventLoopTest {
             public void run() {
                 // NOOP
             }
-        }, KQueueEventLoop.MAX_SCHEDULED_DAYS, TimeUnit.DAYS);
+        }, Long.MAX_VALUE, TimeUnit.MILLISECONDS);
 
         assertFalse(future.awaitUninterruptibly(1000));
         assertTrue(future.cancel(true));
